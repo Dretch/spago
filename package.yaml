@@ -58,6 +58,7 @@ library:
   - dhall-json
   - bytestring
   - prettyprinter
+  - pretty-terminal
   - async-pool
   - process
   - network-uri

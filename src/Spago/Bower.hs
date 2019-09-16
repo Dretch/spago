@@ -2,6 +2,7 @@ module Spago.Bower
   ( path
   , generateBowerJson
   , runBowerInstall
+  , verifyPackageSet
   ) where
 
 import Spago.Prelude
@@ -9,13 +10,17 @@ import Spago.Prelude
 import qualified Data.Aeson                 as Aeson
 import qualified Data.Aeson.Encode.Pretty   as Pretty
 import qualified Data.ByteString.Lazy       as ByteString
+import           Data.Either.Combinators    (mapLeft)
 import qualified Data.HashMap.Strict        as HashMap
+import qualified Data.Map                   as Map
+import qualified Data.SemVer                as SemVer
 import           Data.String                (IsString)
 import qualified Data.Text                  as Text
 import           Data.Text.Lazy             (fromStrict)
 import           Data.Text.Lazy.Encoding    (encodeUtf8)
 import qualified Distribution.System        as System
 import           Distribution.System        (OS (..))
+import qualified System.Console.Pretty      as Pretty
 import qualified Turtle
 import           Web.Bower.PackageMeta      (PackageMeta (..))
 import qualified Web.Bower.PackageMeta      as Bower
@@ -144,3 +149,72 @@ mkDependencies config = do
       -- (just kidding, its a bug: https://github.com/bower/spec/issues/79)
       Windows -> pure 1
       _       -> asks globalJobs
+
+
+verifyPackageSet :: Spago m => m ()
+verifyPackageSet = do
+  echo "Verifying bower.json version range compatibility..."
+
+  Config{packageSet = packageSet@PackageSet{..}} <- Config.ensureConfig
+
+  for_ (Map.assocs packagesDB) $ \(PackageName{..}, Package{..}) -> do
+    echo $ "Verifying " <> packageName
+
+    handleAny (\e -> echo $ Pretty.color Pretty.Red "Error calling bower" <> " " <> Text.pack (show e)) $ do
+      
+      PackageMeta{bowerDependencies} <- runBowerInfo packageName location
+      for_ bowerDependencies $ \(name, versionRange) -> do
+
+        let checked = case checkBowerVersion packageSet name versionRange of
+              Left msg -> Pretty.color Pretty.Red "INCOMPATIBLE" <> " (" <> msg <> ")"
+              Right msg -> Pretty.color Pretty.Green "COMPATIBLE" <> " (" <> msg <> ")"
+
+        echo $ " - "
+          <> Bower.runPackageName name
+          <> ": " <> Bower.runVersionRange versionRange <> " .. "
+          <> checked
+  where
+    runBowerInfo :: Spago m => Text -> PackageLocation -> m Bower.PackageMeta
+    runBowerInfo packageName location = do
+
+      version <- case location of
+        Local localPath ->
+          die $ "Unable to create Bower version for local repo: " <> localPath
+        Remote{..} ->
+          pure version
+
+      bowerName <- mkPackageName packageName
+      let args = ["info", "--json", Bower.runPackageName bowerName <> "#" <> version]
+      (code, stdout, stderr) <- runBower args
+
+      when (code /= ExitSuccess) $ do
+        die $ "Failed to run: `bower " <> Text.intercalate " " args <> "`\n" <> stderr
+
+      case Aeson.decode $ encodeUtf8 $ fromStrict stdout of
+        Just obj -> pure obj
+        _ -> die $ "Unable to decode output from `bower " <> Text.intercalate " " args <> "`: " <> stdout
+
+    checkBowerVersion :: PackageSet -> Bower.PackageName -> Bower.VersionRange -> Either Text Text
+    checkBowerVersion PackageSet{packagesDB} bowerName Bower.VersionRange{runVersionRange} =
+      case Bower.runPackageName bowerName of
+        name | Just pkgName <- Text.stripPrefix "purescript-" name ->
+          case Map.lookup (PackageName pkgName) packagesDB of
+            Nothing ->
+              Left "No corresponding package in package set"
+            Just (Package{location = Local _}) ->
+              Left "Corresponding package is local"
+            Just (Package{location = Remote{version}}) -> do
+
+              pkgSetVersion <- mapLeft
+                (const $ "Invalid package set version: " <> version)
+                (SemVer.parseSemVer version)
+
+              bowerRange <- mapLeft
+                (const $ "Invalid bower version range: " <> runVersionRange)
+                (SemVer.parseSemVerRange runVersionRange)
+
+              if SemVer.matches bowerRange pkgSetVersion
+                then Right $ version <> " in package set"
+                else Left $ version <> " in package set"
+        _name ->
+          Left "invalid dependency name (must start with 'purescript-')"

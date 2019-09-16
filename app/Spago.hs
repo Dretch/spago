@@ -14,6 +14,7 @@ import           Spago.Build         (BuildOptions (..), DepsOnly (..), ExtraArg
                                       ModuleName (..), NoBuild (..), NoInstall (..), NoSearch (..),
                                       SourcePath (..), TargetPath (..), Watch (..), WithMain (..))
 import qualified Spago.Build
+import qualified Spago.Bower
 import qualified Spago.Config        as Config
 import           Spago.DryRun        (DryRun (..))
 import qualified Spago.GitHub
@@ -60,6 +61,8 @@ data Command
 
   -- | Verify that the Package Set is correct
   | VerifySet (Maybe CacheFlag)
+
+  | VerifySetBower
 
   -- | Test the project with some module, default Test.Main
   | Test (Maybe ModuleName) BuildOptions [ExtraArg]
@@ -250,6 +253,7 @@ parser = do
       , listPackages
       , verify
       , verifySet
+      , verifySetBower
       , upgradeSet
       , freeze
       ]
@@ -282,6 +286,12 @@ parser = do
       ( "verify-set"
       , "Verify that the whole Package Set builds correctly"
       , VerifySet <$> cacheFlag
+      )
+
+    verifySetBower =
+      ( "verify-set-bower"
+      , "Verify that the versions in the package sets bower.json file are compatible with the package set versions"
+      , pure VerifySetBower
       )
 
     upgradeSet =
@@ -383,6 +393,7 @@ main = do
       Sources                               -> Spago.Packages.sources
       Verify cacheConfig package            -> Spago.Packages.verify cacheConfig (Just package)
       VerifySet cacheConfig                 -> Spago.Packages.verify cacheConfig Nothing
+      VerifySetBower                        -> Spago.Bower.verifyPackageSet
       PackageSetUpgrade                     -> Spago.Packages.upgradePackageSet
       Freeze                                -> Spago.Packages.freeze
       Build buildOptions                    -> Spago.Build.build buildOptions Nothing
